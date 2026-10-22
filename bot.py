@@ -24,13 +24,23 @@ def save_history(history):
         json.dump(list(history), f, ensure_ascii=False, indent=2)
 
 def generate_summary(title, description):
-    """Генерация краткой выжимки через Google Gemini API."""
+    """Генерация детальной структурированной выжимки через Google Gemini API."""
     if not GEMINI_API_KEY:
         return None
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+    
+    # Расширенный промпт для красивого форматирования
     prompt = (
-        f"Сделай краткую выжимку (2-3 предложения) для новости на русском языке.\n\n"
+        f"Проанализируй новость и сделай качественную, красиво отформатированную выжимку на русском языке.\n"
+        f"Используй следующий формат (с эмодзи и списками):\n\n"
+        f"📌 <b>Главное:</b> (1-2 предложения с сутью новости)\n"
+        f"🔑 <b>Ключевые детали:</b>\n"
+        f"• (деталь 1)\n"
+        f"• (деталь 2)\n"
+        f"• (деталь 3)\n"
+        f"💡 <b>Что это значит / Итог:</b> (1 короткий вывод)\n\n"
+        f"Новость для анализа:\n"
         f"Заголовок: {title}\n"
         f"Текст новости: {description}"
     )
@@ -40,7 +50,7 @@ def generate_summary(title, description):
     }
 
     try:
-        response = requests.post(url, json=payload, timeout=15)
+        response = requests.post(url, json=payload, timeout=20)
         if response.status_code == 200:
             data = response.json()
             return data["candidates"][0]["content"]["parts"][0]["text"].strip()
