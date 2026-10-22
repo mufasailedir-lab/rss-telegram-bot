@@ -24,22 +24,22 @@ def save_history(history):
         json.dump(list(history), f, ensure_ascii=False, indent=2)
 
 def generate_summary(title, description):
-    """Генерация детальной структурированной выжимки через Google Gemini API."""
+    """Генерация структурированной выжимки через Gemini API."""
     if not GEMINI_API_KEY:
+        print("⚠️ Предупреждение: GEMINI_API_KEY не передан в переменные окружения!")
         return None
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
     
-    # Расширенный промпт для красивого форматирования
     prompt = (
-        f"Проанализируй новость и сделай качественную, красиво отформатированную выжимку на русском языке.\n"
-        f"Используй следующий формат (с эмодзи и списками):\n\n"
-        f"📌 <b>Главное:</b> (1-2 предложения с сутью новости)\n"
+        f"Проанализируй новость и сделай структурированную выжимку на русском языке.\n"
+        f"Используй следующий формат:\n\n"
+        f"📌 <b>Главное:</b> (1-2 предложения с сутью новости)\n\n"
         f"🔑 <b>Ключевые детали:</b>\n"
         f"• (деталь 1)\n"
         f"• (деталь 2)\n"
-        f"• (деталь 3)\n"
-        f"💡 <b>Что это значит / Итог:</b> (1 короткий вывод)\n\n"
+        f"• (деталь 3)\n\n"
+        f"💡 <b>Итог:</b> (1 короткий вывод)\n\n"
         f"Новость для анализа:\n"
         f"Заголовок: {title}\n"
         f"Текст новости: {description}"
@@ -54,14 +54,16 @@ def generate_summary(title, description):
         if response.status_code == 200:
             data = response.json()
             return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        else:
+            print(f"Ошибка Gemini API (Статус {response.status_code}): {response.text}")
     except Exception as e:
-        print(f"Ошибка при обращении к Gemini API: {e}")
+        print(f"Исключение при вызове Gemini API: {e}")
     
     return None
 
 def send_telegram_message(title, link, summary=None):
     if summary:
-        text = f"<b>{title}</b>\n\n📝 <b>Краткое содержание:</b>\n{summary}\n\n🔗 <a href='{link}'>Читать полностью</a>"
+        text = f"<b>{title}</b>\n\n{summary}\n\n🔗 <a href='{link}'>Читать полностью</a>"
     else:
         text = f"<b>{title}</b>\n\n🔗 <a href='{link}'>Читать полностью</a>"
 
@@ -96,7 +98,6 @@ def main():
     for entry in new_entries:
         title = entry.title
         link = entry.link
-        # Берем описание или полный текст из RSS
         description = getattr(entry, 'summary', getattr(entry, 'description', ''))
 
         print(f"Обработка новости: {title}")
