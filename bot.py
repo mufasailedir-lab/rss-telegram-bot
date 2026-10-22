@@ -26,7 +26,7 @@ def save_history(history):
 def generate_summary(title, description):
     """Генерация структурированной выжимки через Gemini API."""
     if not GEMINI_API_KEY:
-        print("⚠️ Предупреждение: GEMINI_API_KEY не передан в переменные окружения!")
+        print("❌ Ошибка: Переменная GEMINI_API_KEY отсутствует!")
         return None
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
@@ -55,9 +55,9 @@ def generate_summary(title, description):
             data = response.json()
             return data["candidates"][0]["content"]["parts"][0]["text"].strip()
         else:
-            print(f"Ошибка Gemini API (Статус {response.status_code}): {response.text}")
+            print(f"❌ Ошибка Gemini API [{response.status_code}]: {response.text}")
     except Exception as e:
-        print(f"Исключение при вызове Gemini API: {e}")
+        print(f"❌ Исключение при запросе к Gemini API: {e}")
     
     return None
 
