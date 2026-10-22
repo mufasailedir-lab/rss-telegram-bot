@@ -6,6 +6,7 @@ import feedparser
 RSS_URL = "https://energynewsbeat.co/feed/"
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 HISTORY_FILE = "posted_links.json"
 
 def load_history():
@@ -14,7 +15,7 @@ def load_history():
             with open(HISTORY_FILE, "r", encoding="utf-8") as f:
                 return set(json.load(f))
         except Exception as e:
-            print(f"Ошибка при чтении истории: {e}")
+            print(f"Ошибка чтения истории: {e}")
             return set()
     return set()
 
@@ -22,8 +23,38 @@ def save_history(history):
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump(list(history), f, ensure_ascii=False, indent=2)
 
-def send_telegram_message(title, link):
-    text = f"<b>{title}</b>\n\n🔗 <a href='{link}'>Читать полностью</a>"
+def generate_summary(title, description):
+    """Генерация краткой выжимки через Google Gemini API."""
+    if not GEMINI_API_KEY:
+        return None
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+    prompt = (
+        f"Сделай краткую выжимку (2-3 предложения) для новости на русском языке.\n\n"
+        f"Заголовок: {title}\n"
+        f"Текст новости: {description}"
+    )
+
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}]
+    }
+
+    try:
+        response = requests.post(url, json=payload, timeout=15)
+        if response.status_code == 200:
+            data = response.json()
+            return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+    except Exception as e:
+        print(f"Ошибка при обращении к Gemini API: {e}")
+    
+    return None
+
+def send_telegram_message(title, link, summary=None):
+    if summary:
+        text = f"<b>{title}</b>\n\n📝 <b>Краткое содержание:</b>\n{summary}\n\n🔗 <a href='{link}'>Читать полностью</a>"
+    else:
+        text = f"<b>{title}</b>\n\n🔗 <a href='{link}'>Читать полностью</a>"
+
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": CHAT_ID,
@@ -36,7 +67,7 @@ def send_telegram_message(title, link):
 
 def main():
     if not BOT_TOKEN or not CHAT_ID:
-        print("Ошибка: Переменные BOT_TOKEN или CHAT_ID не заданы.")
+        print("Ошибка: BOT_TOKEN или CHAT_ID не заданы.")
         return
 
     history = load_history()
@@ -46,7 +77,6 @@ def main():
         print("Лента пуста или недоступна.")
         return
 
-    # Фильтруем новые записи (обрабатываем от старых к новым)
     new_entries = [entry for entry in reversed(feed.entries) if entry.link not in history]
 
     if not new_entries:
@@ -54,11 +84,18 @@ def main():
         return
 
     for entry in new_entries:
-        print(f"Отправка новости: {entry.title}")
-        if send_telegram_message(entry.title, entry.link):
-            history.add(entry.link)
+        title = entry.title
+        link = entry.link
+        # Берем описание или полный текст из RSS
+        description = getattr(entry, 'summary', getattr(entry, 'description', ''))
+
+        print(f"Обработка новости: {title}")
+        summary = generate_summary(title, description)
+        
+        if send_telegram_message(title, link, summary):
+            history.add(link)
         else:
-            print(f"Не удалось отправить: {entry.link}")
+            print(f"Не удалось отправить: {link}")
 
     save_history(history)
 
