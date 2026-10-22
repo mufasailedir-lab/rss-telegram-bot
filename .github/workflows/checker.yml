@@ -2,7 +2,9 @@ name: RSS Feed Checker
 
 on:
   schedule:
+    # Запуск каждые 15 минут по встроенному таймеру GitHub
     - cron: '*/15 * * * *'
+  # Позволяет запускать скрипт вручную и принимать внешние вызовы (в т.ч. от cron-job.org)
   workflow_dispatch:
 
 jobs:
