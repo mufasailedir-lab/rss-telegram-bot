@@ -29,7 +29,7 @@ def generate_summary(title, description):
         print("❌ Ошибка: Переменная GEMINI_API_KEY отсутствует!")
         return None
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
     
     prompt = (
         f"Проанализируй новость и сделай структурированную выжимку на русском языке.\n"
