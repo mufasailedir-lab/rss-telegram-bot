@@ -2,6 +2,10 @@ import os
 import json
 import requests
 import feedparser
+import html
+import re
+import time
+
 
 RSS_URL = "https://energynewsbeat.co/feed/"
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
@@ -23,59 +27,68 @@ def save_history(history):
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump(list(history), f, ensure_ascii=False, indent=2)
 
-def generate_summary(title, description):
-    """Генерация структурированной выжимки через Gemini API."""
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+
+
+def clean_html(raw):
+    text = re.sub(r"<[^>]+>", " ", raw or "")
+    return re.sub(r"\s+", " ", html.unescape(text)).strip()
+
+
+def get_entry_text(entry):
+    # Сначала полный текст, если лента его отдаёт, иначе анонс
+    if getattr(entry, "content", None):
+        return clean_html(entry.content[0].value)
+    return clean_html(getattr(entry, "summary", getattr(entry, "description", "")))
+
+
+def generate_summary(title, text):
     if not GEMINI_API_KEY:
-        print("❌ Ошибка: Переменная GEMINI_API_KEY отсутствует!")
+        print("❌ GEMINI_API_KEY не задан")
         return None
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
-    
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
     prompt = (
-        f"Проанализируй новость и сделай структурированную выжимку на русском языке.\n"
-        f"Используй следующий формат:\n\n"
-        f"📌 <b>Главное:</b> (1-2 предложения с сутью новости)\n\n"
-        f"🔑 <b>Ключевые детали:</b>\n"
-        f"• (деталь 1)\n"
-        f"• (деталь 2)\n"
-        f"• (деталь 3)\n\n"
-        f"💡 <b>Итог:</b> (1 короткий вывод)\n\n"
-        f"Новость для анализа:\n"
+        "Проанализируй новость и сделай структурированную выжимку на русском языке.\n"
+        "Формат (используй только теги <b>, другой разметки не надо):\n\n"
+        "📌 <b>Главное:</b> (1-2 предложения)\n\n"
+        "🔑 <b>Ключевые детали:</b>\n• ...\n• ...\n• ...\n\n"
+        "💡 <b>Итог:</b> (1 короткий вывод)\n\n"
         f"Заголовок: {title}\n"
-        f"Текст новости: {description}"
+        f"Текст: {text[:8000]}"
     )
+    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+    headers = {"x-goog-api-key": GEMINI_API_KEY}
 
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}]
-    }
-
-    try:
-        response = requests.post(url, json=payload, timeout=20)
-        if response.status_code == 200:
-            data = response.json()
-            return data["candidates"][0]["content"]["parts"][0]["text"].strip()
-        else:
-            print(f"❌ Ошибка Gemini API [{response.status_code}]: {response.text}")
-    except Exception as e:
-        print(f"❌ Исключение при запросе к Gemini API: {e}")
-    
+    for attempt in range(3):
+        try:
+            r = requests.post(url, json=payload, headers=headers, timeout=30)
+            if r.status_code == 200:
+                return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+            print(f"❌ Gemini [{r.status_code}]: {r.text[:300]}")
+            if r.status_code in (429, 500, 503):
+                time.sleep(5 * (attempt + 1))
+                continue
+            return None  # 400/404 и т.п. повторять бессмысленно
+        except Exception as e:
+            print(f"❌ Ошибка запроса к Gemini: {e}")
+            time.sleep(3)
     return None
 
-def send_telegram_message(title, link, summary=None):
-    if summary:
-        text = f"<b>{title}</b>\n\n{summary}\n\n🔗 <a href='{link}'>Читать полностью</a>"
-    else:
-        text = f"<b>{title}</b>\n\n🔗 <a href='{link}'>Читать полностью</a>"
 
+def send_telegram_message(title, link, summary):
+    text = f"<b>{html.escape(title)}</b>\n\n{summary}\n\n🔗 <a href='{link}'>Читать полностью</a>"
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": CHAT_ID,
-        "text": text,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": False
-    }
-    response = requests.post(url, json=payload)
-    return response.ok
+    payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"}
+
+    r = requests.post(url, json=payload)
+    if not r.ok:
+        print(f"Telegram [{r.status_code}]: {r.text}")
+        # если сломалась HTML-разметка от нейросети, шлём без неё
+        payload.pop("parse_mode")
+        payload["text"] = re.sub(r"<[^>]+>", "", text)
+        r = requests.post(url, json=payload)
+    return r.ok
 
 def main():
     if not BOT_TOKEN or not CHAT_ID:
@@ -98,11 +111,15 @@ def main():
     for entry in new_entries:
         title = entry.title
         link = entry.link
-        description = getattr(entry, 'summary', getattr(entry, 'description', ''))
-
+        text = get_entry_text(entry)
+    
         print(f"Обработка новости: {title}")
-        summary = generate_summary(title, description)
-        
+        summary = generate_summary(title, text)
+    
+        if not summary:
+            print("Выжимки нет, пропускаю — попробую в следующий запуск")
+            continue
+    
         if send_telegram_message(title, link, summary):
             history.add(link)
         else:
