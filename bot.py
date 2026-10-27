@@ -99,12 +99,12 @@ def generate_summary(title, text):
     return None
 
 
-def send_telegram_message(title, link, summary):
-    text = f"<b>{html.escape(title)}</b>\n\n{summary}\n\n🔗 <a href='{link}'>Читать полностью</a>"
+def send_telegram_message(title, summary):
+    text = f"<b>{html.escape(title)}</b>\n\n{summary}"
 
     # Защита от превышения лимита сообщения Telegram (4096 символов)
     if len(text) > 4000:
-        text = text[:3950] + f"...\n\n🔗 <a href='{link}'>Читать полностью</a>"
+        text = text[:3950] + "..."
 
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"}
