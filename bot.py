@@ -12,8 +12,9 @@ CHAT_ID = os.environ.get("CHAT_ID")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 HISTORY_FILE = "posted_links.json"
 
-# Очередь моделей: сначала быстрая флагманская, при перегрузке — резервная
-MODELS_QUEUE = ["gemini-3.8-flash", "gemini-3.5-flash-lite"]
+# gemini-3.5-flash-lite установлена первой для экономии квот (защита от 429),
+# gemini-3.8-flash используется как резервная
+MODELS_QUEUE = ["gemini-3.5-flash-lite", "gemini-3.8-flash"]
 
 
 def load_history():
@@ -102,7 +103,7 @@ def generate_summary(title, text):
 def send_telegram_message(title, summary):
     text = f"<b>{html.escape(title)}</b>\n\n{summary}"
 
-    # Защита от превышения лимита сообщения Telegram (4096 символов)
+    # Контроль лимита сообщения Telegram (4096 символов)
     if len(text) > 4000:
         text = text[:3950] + "..."
 
@@ -148,10 +149,13 @@ def main():
             print("⚠️ Выжимка не получена от ИИ, отправляю исходный текст")
             summary = text[:400] + ("..." if len(text) > 400 else "")
 
-        if send_telegram_message(title, link, summary):
+        if send_telegram_message(title, summary):
             history.add(link)
         else:
             print(f"Не удалось отправить: {link}")
+
+        # Пауза между запросами для предотвращения исчерпания минутных квот API
+        time.sleep(5)
 
     save_history(history)
 
