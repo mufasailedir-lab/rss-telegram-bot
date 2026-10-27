@@ -64,7 +64,13 @@ def generate_summary(title, text):
         try:
             r = requests.post(url, json=payload, headers=headers, timeout=30)
             if r.status_code == 200:
-                return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+                if r.status_code == 200:
+                    data = r.json()
+                    try:
+                        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                    except (KeyError, IndexError):
+                        print(f"⚠️ Текст не найден в ответе: {data}")
+        return None
             print(f"❌ Gemini [{r.status_code}]: {r.text[:300]}")
             if r.status_code in (429, 500, 503):
                 time.sleep(5 * (attempt + 1))
@@ -117,8 +123,8 @@ def main():
         summary = generate_summary(title, text)
     
         if not summary:
-            print("Выжимки нет, пропускаю — попробую в следующий запуск")
-            continue
+            print("Выжимки нет, отправляю исходный текст")
+            summary = text[:400] + ("..." if len(text) > 400 else "")
     
         if send_telegram_message(title, link, summary):
             history.add(link)
