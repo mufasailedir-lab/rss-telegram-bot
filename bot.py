@@ -12,8 +12,8 @@ CHAT_ID = os.environ.get("CHAT_ID")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 HISTORY_FILE = "posted_links.json"
 
-# Используем реальную рабочую модель
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
+# Очередь моделей: сначала быстрая флагманская, при перегрузке — резервная
+MODELS_QUEUE = ["gemini-3.8-flash", "gemini-3.5-flash-lite"]
 
 
 def load_history():
@@ -48,44 +48,64 @@ def generate_summary(title, text):
         print("❌ GEMINI_API_KEY не задан")
         return None
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
     prompt = (
-        "Проанализируй новость и сделай структурированную выжимку на русском языке.\n"
-        "Формат (используй только теги <b>, другой разметки не надо):\n\n"
-        "📌 <b>Главное:</b> (1-2 предложения)\n\n"
-        "🔑 <b>Ключевые детали:</b>\n• ...\n• ...\n• ...\n\n"
-        "💡 <b>Итог:</b> (1 короткий вывод)\n\n"
+        "Ты — профессиональный аналитик энергетического рынка. "
+        "Проанализируй новость и подготовь развернутую, содержательную выжимку на русском языке.\n\n"
+        "Требования к оформлению:\n"
+        "1. Используй только HTML-теги <b> и <i>. Markdown (*, **, #) использовать строго запрещено.\n"
+        "2. Обязательно сохраняй все важные цифры, суммы в $, мощности, названия регуляторов и компаний.\n\n"
+        "Формат:\n\n"
+        "📌 <b>В чём суть:</b>\n"
+        "(Развернутый абзац на 3-4 предложения с описанием контекста, причин и масштаба проблемы)\n\n"
+        "📊 <b>Ключевые детали и цифры:</b>\n"
+        "• <b>...</b>: подробное описание важного факта или метрики с цифрами\n"
+        "• <b>...</b>: еще один ключевой аспект\n"
+        "• <b>...</b>: позиции сторон, решения регуляторов или контракты\n"
+        "• <b>...</b>: технические или финансовые нюансы\n"
+        "• <b>...</b>: влияние на потребителей или инфраструктуру\n\n"
+        "⚖️ <b>Конфликт интересов и позиции:</b>\n"
+        "(Кратко о том, кто и почему спорит — регуляторы, бигтех, потребители, энергокомпании)\n\n"
+        "💡 <b>Итог и последствия:</b>\n"
+        "(Что это означает в долгосрочной перспективе для рынка и счетов за энергию)\n\n"
         f"Заголовок: {title}\n"
-        f"Текст: {text[:8000]}"
+        f"Текст статьи:\n{text[:14000]}"
     )
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
     headers = {"x-goog-api-key": GEMINI_API_KEY}
 
-    for attempt in range(3):
-        try:
-            r = requests.post(url, json=payload, headers=headers, timeout=30)
-            if r.status_code == 200:
-                data = r.json()
-                try:
-                    return data["candidates"][0]["content"]["parts"][0]["text"].strip()
-                except (KeyError, IndexError):
-                    print(f"⚠️ Текст не найден в ответе: {data}")
-                    return None
+    for model in MODELS_QUEUE:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
-            print(f"❌ Gemini [{r.status_code}]: {r.text[:300]}")
-            if r.status_code in (429, 500, 503):
-                time.sleep(5 * (attempt + 1))
-                continue
-            return None
-        except Exception as e:
-            print(f"❌ Ошибка запроса к Gemini: {e}")
-            time.sleep(3)
+        for attempt in range(2):
+            try:
+                r = requests.post(url, json=payload, headers=headers, timeout=35)
+                if r.status_code == 200:
+                    data = r.json()
+                    try:
+                        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                    except (KeyError, IndexError):
+                        print(f"⚠️ Текст не найден в ответе {model}: {data}")
+                        break
+
+                print(f"⚠️ Gemini [{model}][{r.status_code}]: {r.text[:200]}")
+                if r.status_code in (429, 500, 503):
+                    time.sleep(3)
+                    continue
+                break
+            except Exception as e:
+                print(f"❌ Ошибка соединения с {model}: {e}")
+                time.sleep(2)
 
     return None
 
 
 def send_telegram_message(title, link, summary):
     text = f"<b>{html.escape(title)}</b>\n\n{summary}\n\n🔗 <a href='{link}'>Читать полностью</a>"
+
+    # Защита от превышения лимита сообщения Telegram (4096 символов)
+    if len(text) > 4000:
+        text = text[:3950] + f"...\n\n🔗 <a href='{link}'>Читать полностью</a>"
+
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"}
 
