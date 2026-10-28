@@ -13,10 +13,10 @@ CHAT_ID = os.environ.get("CHAT_ID")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 HISTORY_FILE = "posted_links.json"
 
-# Сначала быстрая gemini-3.5-flash-lite для экономии квот, затем резервная gemini-3.8-flash
+# Сначала легковесная gemini-3.5-flash-lite для экономии квот, затем резервная gemini-3.8-flash
 MODELS_QUEUE = ["gemini-3.5-flash-lite", "gemini-3.8-flash"]
 
-# Словарь сопоставления разделов сайта с русскими хештегами
+# Словарь сопоставления рубрик из URL с русскими хештегами
 CATEGORY_TAGS = {
     "crude-oil": "#нефть",
     "crude-oil-news": "#нефть",
@@ -35,7 +35,7 @@ CATEGORY_TAGS = {
     "international-news": "#мировые_новости",
 }
 
-# Ключевые слова в URL подкастов и аудио-шоу для исключения
+# Шаблоны ссылок подкастов и аудио-шоу для фильтрации
 PODCAST_PATTERNS = [
     "conversations-in-energy-with-stu-turley",
     "energy-transition-podcast",
@@ -54,7 +54,7 @@ def load_history():
 
 
 def save_history(history):
-    # Храним только последние 300 ссылок, чтобы файл не разрастался
+    # Сохраняем только последние 300 ссылок во избежание разрастания файла
     trimmed = list(history)[-300:]
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump(trimmed, f, ensure_ascii=False, indent=2)
@@ -62,7 +62,11 @@ def save_history(history):
 
 def clean_html(raw):
     text = re.sub(r"<[^>]+>", " ", raw or "")
-    return re.sub(r"\s+", " ", html.unescape(text)).strip()
+    text = html.unescape(text)
+    # Удаление типового рекламного мусора и плашек рассылок WordPress
+    text = re.sub(r"The post .*? appeared first on .*?(\.|$)", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"Sign up for (our )?newsletter.*", "", text, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def get_entry_text(entry):
@@ -92,27 +96,32 @@ def generate_summary(title, text):
         print("❌ GEMINI_API_KEY не задан")
         return None
 
+    # Лаконичный промпт для минимизации расхода входных токенов
     prompt = (
-        "Ты — редактор русскоязычного новостного Telegram-канала об энергетике. "
-        "Переведи заголовок и подготовь лаконичную, легко читаемую выжимку статьи.\n\n"
-        "Требования:\n"
-        "1. Весь текст (включая заголовок) должен быть СТРОГО на грамотном русском языке.\n"
-        "2. Используй только HTML-теги <b> и <i>. Любой Markdown (*, **, #) строго запрещён.\n"
-        "3. Текст должен читаться за 20 секунд: пиши ёмко, без канцеляризмов и длинных вводных конструкций.\n"
-        "4. Обязательно сохраняй ключевые цифры ($, %, ГВт, баррели), компании и регуляторов.\n"
-        "5. Каждый пункт в деталях — строго одно короткое предложение.\n\n"
+        "Сделай Telegram-выжимку новости об энергетике на русском языке (до 140 слов).\n"
+        "Используй только HTML-теги <b> и <i>. Markdown (*, **, #) строго запрещен.\n"
+        "Обязательно сохраняй ключевые цифры ($, %, объёмы), названия компаний и регуляторов.\n"
+        "Каждый пункт в деталях — строго одно короткое предложение.\n\n"
         "Формат строго следующий:\n\n"
-        "📰 <b>(Ёмкий заголовок новости на русском языке)</b>\n\n"
-        "⚡ <b>Главное:</b> 1-2 коротких предложения о сути инфоповода.\n\n"
+        "📰 <b>(Заголовок новости на русском языке)</b>\n\n"
+        "⚡ <b>Главное:</b> 1-2 предложения о сути инфоповода.\n\n"
         "📊 <b>В деталях:</b>\n"
-        "• <b>Ключевой факт:</b> пояснение с цифрами\n"
-        "• <b>Ключевой факт:</b> пояснение с цифрами\n"
-        "• <b>Ключевой факт:</b> пояснение с цифрами\n\n"
-        "🎯 <b>Почему это важно:</b> 1 предложение о влиянии на рынок, отрасль или цены.\n\n"
-        f"Оригинальный заголовок: {title}\n"
-        f"Текст статьи:\n{text[:10000]}"
+        "• <b>Факт:</b> краткое пояснение с цифрами\n"
+        "• <b>Факт:</b> краткое пояснение с цифрами\n"
+        "• <b>Факт:</b> краткое пояснение с цифрами\n\n"
+        "🎯 <b>Почему это важно:</b> 1 итоговое предложение о влиянии на рынок или цены.\n\n"
+        f"Заголовок: {title}\n"
+        f"Текст статьи:\n{text[:3500]}"
     )
-    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+    
+    # Лимит выходных токенов и низкая температура для точности и краткости
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "maxOutputTokens": 600,
+            "temperature": 0.2
+        }
+    }
     headers = {"x-goog-api-key": GEMINI_API_KEY}
 
     for model in MODELS_QUEUE:
@@ -120,7 +129,7 @@ def generate_summary(title, text):
 
         for attempt in range(2):
             try:
-                r = requests.post(url, json=payload, headers=headers, timeout=35)
+                r = requests.post(url, json=payload, headers=headers, timeout=30)
                 if r.status_code == 200:
                     data = r.json()
                     try:
@@ -180,22 +189,27 @@ def main():
         link = entry.link
         text = get_entry_text(entry)
 
-        # 1. Отсев подкастов и видео без вызова нейросети
+        # 1. Отсев подкастов и разговорных видео
         if is_podcast(link):
             print(f"⏭ Пропуск подкаста: {title}")
+            history.add(link)
+            continue
+
+        # 2. Отсев пустых страниц и микро-заметок без текста
+        if len(text) < 250:
+            print(f"⏭ Пропуск: слишком короткий текст ({len(text)} симв.): {title}")
             history.add(link)
             continue
 
         print(f"Обработка новости: {title}")
         summary = generate_summary(title, text)
 
-        # 2. Если нейросеть недоступна, не публикуем сырой английский текст —
-        # пропускаем, чтобы повторить попытку в следующий запуск
+        # 3. Если ИИ временно недоступен, пропускаем без отправки в канал
         if not summary:
             print("⚠️ Выжимка не получена от ИИ, пропускаю до следующего запуска")
             continue
 
-        # 3. Извлечение рубрики из URL и добавление хештегов
+        # 4. Добавление тематического хештега на основе URL
         tag = get_tag_from_url(link)
         message_text = f"{summary}\n\n{tag}"
 
@@ -204,7 +218,7 @@ def main():
         else:
             print(f"Не удалось отправить: {link}")
 
-        # Пауза между запросами для предотвращения исчерпания минутных квот API
+        # Пауза между новостями для соблюдения минутных лимитов API
         time.sleep(5)
 
     save_history(history)
