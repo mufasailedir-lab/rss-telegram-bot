@@ -5,6 +5,7 @@ import feedparser
 import html
 import re
 import time
+from urllib.parse import urlparse
 
 RSS_URL = "https://energynewsbeat.co/feed/"
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
@@ -14,6 +15,31 @@ HISTORY_FILE = "posted_links.json"
 
 # Сначала быстрая gemini-3.5-flash-lite для экономии квот, затем резервная gemini-3.8-flash
 MODELS_QUEUE = ["gemini-3.5-flash-lite", "gemini-3.8-flash"]
+
+# Словарь сопоставления разделов сайта с русскими хештегами
+CATEGORY_TAGS = {
+    "crude-oil": "#нефть",
+    "crude-oil-news": "#нефть",
+    "natural-gas": "#газ",
+    "diesel": "#дизель #топливо",
+    "jet-fuel": "#авиакеросин #топливо",
+    "downstream": "#переработка",
+    "electrical-generation": "#электроэнергия",
+    "data-center": "#датацентры #электроэнергия",
+    "ai": "#ИИ #энергетика",
+    "earnings": "#отчетность",
+    "weekly-rig-count": "#бурение",
+    "electric-vehicles": "#электромобили",
+    "net-zero": "#зеленая_энергетика",
+    "big-oil-companies": "#нефтяные_гиганты",
+    "international-news": "#мировые_новости",
+}
+
+# Ключевые слова в URL подкастов и аудио-шоу для исключения
+PODCAST_PATTERNS = [
+    "conversations-in-energy-with-stu-turley",
+    "energy-transition-podcast",
+]
 
 
 def load_history():
@@ -28,8 +54,10 @@ def load_history():
 
 
 def save_history(history):
+    # Храним только последние 300 ссылок, чтобы файл не разрастался
+    trimmed = list(history)[-300:]
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-        json.dump(list(history), f, ensure_ascii=False, indent=2)
+        json.dump(trimmed, f, ensure_ascii=False, indent=2)
 
 
 def clean_html(raw):
@@ -41,6 +69,22 @@ def get_entry_text(entry):
     if getattr(entry, "content", None):
         return clean_html(entry.content[0].value)
     return clean_html(getattr(entry, "summary", getattr(entry, "description", "")))
+
+
+def get_tag_from_url(url):
+    try:
+        path_segments = [seg for seg in urlparse(url).path.split("/") if seg]
+        if path_segments:
+            category = path_segments[0].lower()
+            return CATEGORY_TAGS.get(category, "#энергетика")
+    except Exception:
+        pass
+    return "#энергетика"
+
+
+def is_podcast(url):
+    url_lower = url.lower()
+    return any(pattern in url_lower for pattern in PODCAST_PATTERNS)
 
 
 def generate_summary(title, text):
@@ -98,7 +142,6 @@ def generate_summary(title, text):
 
 
 def send_telegram_message(message_text):
-    # Защита от превышения лимита сообщения Telegram (4096 символов)
     if len(message_text) > 4000:
         message_text = message_text[:3950] + "..."
 
@@ -137,24 +180,31 @@ def main():
         link = entry.link
         text = get_entry_text(entry)
 
+        # 1. Отсев подкастов и видео без вызова нейросети
+        if is_podcast(link):
+            print(f"⏭ Пропуск подкаста: {title}")
+            history.add(link)
+            continue
+
         print(f"Обработка новости: {title}")
         summary = generate_summary(title, text)
 
-        # Если ИИ сформировал пост, используем его (он уже содержит русский заголовок).
-        # Если выжимка не удалась, собираем аварийный пост с оригинальным заголовком.
-        if summary:
-            message_text = summary
-        else:
-            print("⚠️ Выжимка не получена от ИИ, отправляю исходный текст")
-            fallback_body = text[:400] + ("..." if len(text) > 400 else "")
-            message_text = f"<b>{html.escape(title)}</b>\n\n{fallback_body}"
+        # 2. Если нейросеть недоступна, не публикуем сырой английский текст —
+        # пропускаем, чтобы повторить попытку в следующий запуск
+        if not summary:
+            print("⚠️ Выжимка не получена от ИИ, пропускаю до следующего запуска")
+            continue
+
+        # 3. Извлечение рубрики из URL и добавление хештегов
+        tag = get_tag_from_url(link)
+        message_text = f"{summary}\n\n{tag}"
 
         if send_telegram_message(message_text):
             history.add(link)
         else:
             print(f"Не удалось отправить: {link}")
 
-        # Пауза между запросами для стабильного соблюдения лимитов API
+        # Пауза между запросами для предотвращения исчерпания минутных квот API
         time.sleep(5)
 
     save_history(history)
