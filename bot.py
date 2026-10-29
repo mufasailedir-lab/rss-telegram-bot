@@ -13,10 +13,10 @@ CHAT_ID = os.environ.get("CHAT_ID")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 HISTORY_FILE = "posted_links.json"
 
-# Сначала легковесная gemini-3.5-flash-lite для экономии квот, затем резервная gemini-3.8-flash
+# Очередь моделей Gemini: основная быстрая и резервная флагманская
 MODELS_QUEUE = ["gemini-3.5-flash-lite", "gemini-3.8-flash"]
 
-# Словарь сопоставления рубрик из URL с русскими хештегами
+# Словарь сопоставления категорий из URL с русскими хештегами
 CATEGORY_TAGS = {
     "crude-oil": "#нефть",
     "crude-oil-news": "#нефть",
@@ -35,7 +35,7 @@ CATEGORY_TAGS = {
     "international-news": "#мировые_новости",
 }
 
-# Шаблоны ссылок подкастов и аудио-шоу для фильтрации
+# Шаблоны для отсева разговорных подкастов
 PODCAST_PATTERNS = [
     "conversations-in-energy-with-stu-turley",
     "energy-transition-podcast",
@@ -54,7 +54,6 @@ def load_history():
 
 
 def save_history(history):
-    # Сохраняем только последние 300 ссылок во избежание разрастания файла
     trimmed = list(history)[-300:]
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump(trimmed, f, ensure_ascii=False, indent=2)
@@ -63,7 +62,6 @@ def save_history(history):
 def clean_html(raw):
     text = re.sub(r"<[^>]+>", " ", raw or "")
     text = html.unescape(text)
-    # Удаление типового рекламного мусора и плашек рассылок WordPress
     text = re.sub(r"The post .*? appeared first on .*?(\.|$)", "", text, flags=re.IGNORECASE)
     text = re.sub(r"Sign up for (our )?newsletter.*", "", text, flags=re.IGNORECASE)
     return re.sub(r"\s+", " ", text).strip()
@@ -98,22 +96,23 @@ def generate_summary(title, text):
 
     prompt = (
         "Ты — выпускающий редактор русскоязычного Telegram-канала об энергетике. "
-        "Подготовь адаптированную, ёмкую выжимку новости. "
-        "Формат и структура должны естественно подстраиваться под тип инфоповода "
-        "(статистика, короткое событие, геополитика или аналитика).\n\n"
+        "Сделай адаптированную, ёмкую выжимку новости.\n\n"
         "Главные ограничения:\n"
         "1. Язык: строго русский.\n"
-        "2. Общий объём: 80–130 слов (чтение за 15–20 секунд).\n"
-        "3. Разметка: только HTML (<b>, <i>). Никакого Markdown (*, **, #).\n"
-        "4. Всегда сохраняй ключевые метрики: цены, объёмы, мощности, названия компаний и регуляторов.\n\n"
-        "Правила структуры:\n"
-        "• Заголовок: 📰 <b>(Адаптированный русский заголовок без кавычек)</b>\n"
-        "• Суть: 1–2 предложения, объясняющие инфоповод простым языком.\n"
-        "• Детали: от 2 до 4 буллетов (• <b>...</b>: ...). Не высасывай пункты из пальца: "
-        "если новость короткая — хватит 2 чётких фактов, если сложная — дай до 4.\n"
-        "• Итог (добавляй только при необходимости): если у новости есть понятные долгосрочные "
-        "последствия или прогноз, добавь 1 строку (💡 <b>Контекст/Влияние:</b> ...). "
-        "Если новость чисто описательная — блок итога не нужен.\n\n"
+        "2. Общий объём: 80–120 слов.\n"
+        "3. Разметка: используй ТОЛЬКО HTML-теги <b>, <i> и <blockquote>. "
+        "Markdown (*, **, #) строго запрещен.\n"
+        "4. Всегда сохраняй ключевые цифры ($, %, объёмы, мощности), компании и регуляторов.\n"
+        "5. Блок деталей ОБЯЗАТЕЛЬНО оберни в теги <blockquote>...</blockquote>.\n\n"
+        "Формат:\n\n"
+        "📰 <b>(Ёмкий заголовок на русском без кавычек)</b>\n\n"
+        "⚡ <b>Главное:</b> 1–2 коротких предложения сути инфоповода.\n\n"
+        "<blockquote>"
+        "• <b>...</b>: короткий факт с цифрами\n"
+        "• <b>...</b>: короткий факт с цифрами\n"
+        "• <b>...</b>: короткий факт с цифрами (если есть)"
+        "</blockquote>\n\n"
+        "💡 <b>Контекст:</b> 1 предложение о влиянии на рынок (добавляй только если есть последствия).\n\n"
         f"Заголовок оригинала: {title}\n"
         f"Текст статьи:\n{text[:3500]}"
     )
@@ -153,19 +152,37 @@ def generate_summary(title, text):
     return None
 
 
-def send_telegram_message(message_text):
+def send_telegram_rich_message(message_text, article_url):
     if len(message_text) > 4000:
         message_text = message_text[:3950] + "..."
 
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": message_text, "parse_mode": "HTML"}
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": message_text,
+        "parse_mode": "HTML",
+        # Настройка богатого медиа-превью из статьи
+        "link_preview_options": {
+            "is_disabled": False,
+            "url": article_url,
+            "prefer_large_media": True,
+            "show_above_text": True
+        },
+        # Инлайн-кнопка для четкой нижней границы публикации
+        "reply_markup": {
+            "inline_keyboard": [
+                [{"text": "Читать первоисточник ↗", "url": article_url}]
+            ]
+        }
+    }
 
-    r = requests.post(url, json=payload)
+    r = requests.post(url, json=payload, timeout=25)
     if not r.ok:
         print(f"Telegram [{r.status_code}]: {r.text}")
-        payload.pop("parse_mode")
+        # Запасной вариант отправки с удалением HTML-тегов при ошибке парсинга
+        payload.pop("parse_mode", None)
         payload["text"] = re.sub(r"<[^>]+>", "", message_text)
-        r = requests.post(url, json=payload)
+        r = requests.post(url, json=payload, timeout=25)
     return r.ok
 
 
@@ -192,36 +209,37 @@ def main():
         link = entry.link
         text = get_entry_text(entry)
 
-        # 1. Отсев подкастов и разговорных видео
+        # 1. Отсев подкастов и видео
         if is_podcast(link):
             print(f"⏭ Пропуск подкаста: {title}")
             history.add(link)
             continue
 
-        # 2. Отсев пустых страниц и микро-заметок без текста
+        # 2. Отсев пустых или слишком коротких записей
         if len(text) < 250:
-            print(f"⏭ Пропуск: слишком короткий текст ({len(text)} симв.): {title}")
+            print(f"⏭ Пропуск: короткий текст ({len(text)} симв.): {title}")
             history.add(link)
             continue
 
         print(f"Обработка новости: {title}")
         summary = generate_summary(title, text)
 
-        # 3. Если ИИ временно недоступен, пропускаем без отправки в канал
+        # 3. Если ИИ временно недоступен — пропуск до следующего запуска
         if not summary:
-            print("⚠️ Выжимка не получена от ИИ, пропускаю до следующего запуска")
+            print("⚠️ Выжимка не получена от ИИ, пропускаю")
             continue
 
-        # 4. Добавление тематического хештега на основе URL
+        # 4. Формирование поста: карточка выжимки + хештег
         tag = get_tag_from_url(link)
         message_text = f"{summary}\n\n{tag}"
 
-        if send_telegram_message(message_text):
+        # 5. Отправка через Rich Message (превью статьи над текстом + кнопка-разделитель)
+        if send_telegram_rich_message(message_text, link):
             history.add(link)
+            print("✅ Пост опубликован успешно")
         else:
-            print(f"Не удалось отправить: {link}")
+            print(f"❌ Не удалось отправить: {link}")
 
-        # Пауза между новостями для соблюдения минутных лимитов API
         time.sleep(5)
 
     save_history(history)
